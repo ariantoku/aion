@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Asisten AI</title>
+<style>
+  :root { --bg:#f6f5f2; --card:#fff; --ink:#1d1d1b; --mute:#6b6a66; --line:#e3e1dc; --acc:#c2643a; --user:#1d1d1b; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--ink);
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; font-size:16px; }
+  body { display:flex; flex-direction:column; }
+  header { display:flex; align-items:center; gap:8px; padding:12px 14px; background:var(--card); border-bottom:1px solid var(--line); }
+  header h1 { font-size:17px; margin:0; flex:1; }
+  header .tag { font-size:12px; color:var(--mute); }
+  button { font:inherit; border:0; border-radius:10px; padding:10px 14px; cursor:pointer; }
+  .ghost { background:transparent; color:var(--ink); padding:8px 10px; }
+  .primary { background:var(--acc); color:#fff; }
+  #chat { flex:1; overflow-y:auto; padding:14px; display:flex; flex-direction:column; gap:10px; }
+  .msg { max-width:88%; padding:10px 13px; border-radius:14px; line-height:1.45; white-space:pre-wrap; word-wrap:break-word; }
+  .msg.user { align-self:flex-end; background:var(--user); color:#fff; border-bottom-right-radius:4px; }
+  .msg.ai { align-self:flex-start; background:var(--card); border:1px solid var(--line); border-bottom-left-radius:4px; }
+  .msg.err { align-self:center; background:#fdecea; color:#8a1f11; font-size:14px; }
+  .msg pre { background:#f1efea; padding:8px; border-radius:8px; overflow-x:auto; white-space:pre; font-size:13px; }
+  .msg code { font-family:ui-monospace,Menlo,monospace; font-size:13px; }
+  .empty { margin:auto; text-align:center; color:var(--mute); padding:20px; }
+  form#send { display:flex; gap:8px; padding:10px; background:var(--card); border-top:1px solid var(--line); }
+  textarea { flex:1; font:inherit; resize:none; border:1px solid var(--line); border-radius:12px; padding:10px; max-height:140px; background:var(--bg); color:var(--ink); }
+  #settings { position:fixed; inset:0; background:rgba(0,0,0,.35); display:none; align-items:flex-end; }
+  #settings.open { display:flex; }
+  .sheet { background:var(--card); width:100%; max-height:92%; overflow-y:auto; border-radius:18px 18px 0 0; padding:18px; }
+  .sheet h2 { margin:0 0 12px; font-size:18px; }
+  label { display:block; font-size:13px; color:var(--mute); margin:12px 0 4px; }
+  input, select { width:100%; font:inherit; padding:10px; border:1px solid var(--line); border-radius:10px; background:var(--bg); color:var(--ink); }
+  .row { display:flex; gap:8px; margin-top:16px; }
+  .row button { flex:1; }
+  .note { font-size:12px; color:var(--mute); margin-top:10px; line-height:1.4; }
+  .typing { color:var(--mute); font-style:italic; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Asisten AI <span class="tag" id="tag"></span></h1>
+  <button class="ghost" id="btnClear" title="Obrolan baru">🗑️</button>
+  <button class="ghost" id="btnSet" title="Pengaturan">⚙️</button>
+</header>
+
+<div id="chat"><div class="empty" id="empty">Ketuk ⚙️ untuk memasukkan API key, lalu mulai mengobrol.</div></div>
+
+<form id="send">
+  <textarea id="input" rows="1" placeholder="Tulis pesan…"></textarea>
+  <button class="primary" id="btnSend" type="submit">Kirim</button>
+</form>
+
+<div id="settings">
+  <div class="sheet">
+    <h2>Pengaturan</h2>
+    <label>Penyedia AI</label>
+    <select id="provider">
+      <option value="anthropic">Claude (Anthropic)</option>
+      <option value="openai">OpenAI / kompatibel OpenAI</option>
+      <option value="gemini">Gemini (Google)</option>
+    </select>
+    <label>API key</label>
+    <input id="apiKey" type="password" placeholder="Tempel API key di sini" autocomplete="off">
+    <label>Model</label>
+    <input id="model" placeholder="nama model">
+    <div id="baseWrap">
+      <label>Base URL (opsional, untuk OpenRouter, Groq, dll.)</label>
+      <input id="baseUrl" placeholder="https://api.openai.com/v1">
+    </div>
+    <label>Instruksi sistem (kepribadian / peran agent)</label>
+    <textarea id="system" rows="3" style="width:100%"></textarea>
+    <div class="row">
+      <button class="ghost" id="btnCancel" type="button">Batal</button>
+      <button class="primary" id="btnSave" type="button">Simpan</button>
+    </div>
+    <p class="note">API key hanya disimpan di HP ini dan langsung dikirim ke penyedia AI yang kamu pilih. Biaya pemakaian ditagih ke akun API-mu.</p>
+  </div>
+</div>
+
+<script>
+const DEFAULT_MODEL = { anthropic:"claude-sonnet-5-5", openai:"gpt-4o-mini", gemini:"gemini-2.5-flash" };
+const LABEL = { anthropic:"Claude", openai:"OpenAI", gemini:"Gemini" };
+const $ = id => document.getElementById(id);
+
+function load() {
+  try { return JSON.parse(localStorage.getItem("cfg") || "{}"); } catch(e) { return {}; }
+}
+let cfg = Object.assign({ provider:"anthropic", apiKey:"", model:"", baseUrl:"",
+  system:"Kamu adalah asisten yang membantu. Jawab dalam bahasa Indonesia dengan jelas dan ringkas." }, load());
+let history = []; // {role:'user'|'assistant', content:string}
+let busy = false;
+
+function saveCfg() { try { localStorage.setItem("cfg", JSON.stringify(cfg)); } catch(e) {} }
+function modelOf() { return cfg.model || DEFAULT_MODEL[cfg.provider]; }
+function updateTag() { $("tag").textContent = cfg.apiKey ? "· " + LABEL[cfg.provider] + " · " + modelOf() : "· belum diatur"; }
+
+function openSettings() {
+  $("provider").value = cfg.provider; $("apiKey").value = cfg.apiKey;
+  $("model").value = cfg.model; $("baseUrl").value = cfg.baseUrl; $("system").value = cfg.system;
+  syncFields(); $("settings").classList.add("open");
+}
+function syncFields() {
+  const p = $("provider").value;
+  $("model").placeholder = DEFAULT_MODEL[p] + " (bawaan)";
+  $("baseWrap").style.display = p === "openai" ? "block" : "none";
+}
+$("provider").onchange = syncFields;
+$("btnSet").onclick = openSettings;
+$("btnCancel").onclick = () => $("settings").classList.remove("open");
+$("btnSave").onclick = () => {
+  const p = $("provider").value;
+  if (p !== cfg.provider && $("model").value === cfg.model) $("model").value = ""; // reset model saat ganti penyedia
+  cfg = { provider:p, apiKey:$("apiKey").value.trim(), model:$("model").value.trim(),
+          baseUrl:$("baseUrl").value.trim(), system:$("system").value };
+  saveCfg(); updateTag(); $("settings").classList.remove("open");
+};
+$("btnClear").onclick = () => { history = []; $("chat").innerHTML = ""; addEmpty(); };
+
+function addEmpty() {
+  const d = document.createElement("div"); d.className = "empty"; d.id = "empty";
+  d.textContent = cfg.apiKey ? "Mulai obrolan baru." : "Ketuk ⚙️ untuk memasukkan API key, lalu mulai mengobrol.";
+  $("chat").appendChild(d);
+}
+function esc(s) { return s.replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+function render(text) {
+  // markdown sederhana: blok kode, kode inline, tebal
+  const parts = text.split(/```(?:[\w-]*)\n?([\s\S]*?)```/g);
+  return parts.map((p, i) => i % 2 ? "<pre><code>" + esc(p) + "</code></pre>"
+    : esc(p).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")).join("");
+}
+function addMsg(cls, text) {
+  const e = $("empty"); if (e) e.remove();
+  const d = document.createElement("div"); d.className = "msg " + cls;
+  if (cls === "ai") d.innerHTML = render(text); else d.textContent = text;
+  $("chat").appendChild(d); $("chat").scrollTop = $("chat").scrollHeight; return d;
+}
+
+async function callAI() {
+  const key = cfg.apiKey, model = modelOf();
+  if (cfg.provider === "anthropic") {
+    const r = await fetch("https://api.anthropic.com/v1/messages", {
+      method:"POST",
+      headers:{ "x-api-key":key, "anthropic-version":"2023-06-01", "content-type":"application/json",
+                "anthropic-dangerous-direct-browser-access":"true" },
+      body: JSON.stringify({ model, max_tokens:4096, system:cfg.system || undefined, messages:history })
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error?.message || ("HTTP " + r.status));
+    return j.content.filter(b => b.type === "text").map(b => b.text).join("");
+  }
+  if (cfg.provider === "openai") {
+    const base = (cfg.baseUrl || "https://api.openai.com/v1").replace(/\/+$/, "");
+    const msgs = (cfg.system ? [{ role:"system", content:cfg.system }] : []).concat(history);
+    const r = await fetch(base + "/chat/completions", {
+      method:"POST",
+      headers:{ "Authorization":"Bearer " + key, "content-type":"application/json" },
+      body: JSON.stringify({ model, messages:msgs })
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error?.message || ("HTTP " + r.status));
+    return j.choices[0].message.content || "";
+  }
+  // gemini
+  const body = { contents: history.map(m => ({ role: m.role === "assistant" ? "model" : "user", parts:[{ text:m.content }] })) };
+  if (cfg.system) body.systemInstruction = { parts:[{ text:cfg.system }] };
+  const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model)
+      + ":generateContent?key=" + encodeURIComponent(key), {
+    method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify(body)
+  });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error?.message || ("HTTP " + r.status));
+  return (j.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join("");
+}
+
+$("send").onsubmit = async ev => {
+  ev.preventDefault();
+  const text = $("input").value.trim();
+  if (!text || busy) return;
+  if (!cfg.apiKey) { openSettings(); return; }
+  $("input").value = ""; autoGrow();
+  history.push({ role:"user", content:text }); addMsg("user", text);
+  busy = true; $("btnSend").disabled = true;
+  const wait = addMsg("ai", "…"); wait.classList.add("typing");
+  try {
+    const reply = await callAI();
+    history.push({ role:"assistant", content:reply });
+    wait.classList.remove("typing"); wait.innerHTML = render(reply || "(jawaban kosong)");
+  } catch (e) {
+    history.pop(); wait.remove();
+    addMsg("err", "Gagal: " + e.message);
+  } finally {
+    busy = false; $("btnSend").disabled = false; $("chat").scrollTop = $("chat").scrollHeight;
+  }
+};
+function autoGrow() { const t = $("input"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 140) + "px"; }
+$("input").addEventListener("input", autoGrow);
+
+updateTag();
+if (!cfg.apiKey) openSettings(); else { $("empty").textContent = "Mulai obrolan baru."; }
+</script>
+</body>
+</html>
